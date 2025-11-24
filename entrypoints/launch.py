@@ -5,9 +5,14 @@ import ray
 import io
 import logging
 import base64
+import asyncio
+import json
+import threading
+from datetime import datetime, timezone
+from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, Dict, Any, Union
 import argparse
 
 from xfuser import (
@@ -27,6 +32,7 @@ class GenerateRequest(BaseModel):
     save_disk_path: Optional[str] = None
     height: Optional[int] = 1024
     width: Optional[int] = 1024
+    metadata: Optional[Dict[str, Any]] = None
 
     # Add input validation
     class Config:
@@ -42,6 +48,39 @@ class GenerateRequest(BaseModel):
         }
 
 app = FastAPI()
+logger = logging.getLogger(__name__)
+
+SERVER_LAUNCH_TIME = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+PROFILE_LOG_PATH = Path(
+    os.environ.get("REQUEST_PROFILE_LOG_DIR", os.getcwd())
+) / f"request-exec-info-{SERVER_LAUNCH_TIME}.jsonl"
+_profile_write_lock = threading.Lock()
+
+
+def _to_utc_iso(ts: Optional[Union[float, datetime]]) -> Optional[str]:
+    if ts is None:
+        return None
+    if isinstance(ts, (int, float)):
+        dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+    else:
+        dt = ts
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        else:
+            dt = dt.astimezone(timezone.utc)
+    return dt.isoformat()
+
+
+def _write_profile_line(line: str):
+    PROFILE_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with _profile_write_lock:
+        with open(PROFILE_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+
+
+async def _log_request_profile(record: Dict[str, Any]):
+    line = json.dumps(record, ensure_ascii=False, default=str)
+    await asyncio.to_thread(_write_profile_line, line)
 
 @ray.remote(num_gpus=1)
 class ImageGenerator:
@@ -99,7 +138,7 @@ class ImageGenerator:
 
     def generate(self, request: GenerateRequest):
         try:
-            start_time = time.time()
+            execution_started_at = time.time()
             output = self.pipe(
                 height=request.height,
                 width=request.width,
@@ -110,7 +149,8 @@ class ImageGenerator:
                 guidance_scale=request.cfg,
                 max_sequence_length=self.input_config.max_sequence_length
             )
-            elapsed_time = time.time() - start_time
+            execution_completed_at = time.time()
+            elapsed_time = execution_completed_at - execution_started_at
 
             if self.pipe.is_dp_last_group():
                 if request.save_disk_path:
@@ -123,7 +163,11 @@ class ImageGenerator:
                         "message": "Image generated successfully",
                         "elapsed_time": f"{elapsed_time:.2f} sec",
                         "output": file_path,
-                        "save_to_disk": True
+                        "save_to_disk": True,
+                        "execution_started_at": execution_started_at,
+                        "execution_completed_at": execution_completed_at,
+                        "result_file_name": filename,
+                        "result_file_path": file_path,
                     }
                 else:
                     # Convert to base64
@@ -134,7 +178,11 @@ class ImageGenerator:
                         "message": "Image generated successfully",
                         "elapsed_time": f"{elapsed_time:.2f} sec",
                         "output": img_str,
-                        "save_to_disk": False
+                        "save_to_disk": False,
+                        "execution_started_at": execution_started_at,
+                        "execution_completed_at": execution_completed_at,
+                        "result_file_name": None,
+                        "result_file_path": None,
                     }
             return None
 
@@ -164,6 +212,9 @@ class Engine:
 
 @app.post("/generate")
 async def generate_image(request: GenerateRequest):
+    arrival_time = datetime.utcnow()
+    result = None
+    error_detail: Optional[str] = None
     try:
         # Add input validation
         if not request.prompt:
@@ -172,13 +223,43 @@ async def generate_image(request: GenerateRequest):
             raise HTTPException(status_code=400, detail="Height and width must be positive")
         if request.num_inference_steps <= 0:
             raise HTTPException(status_code=400, detail="num_inference_steps must be positive")
-            
+
         result = await engine.generate(request)
         return result
     except Exception as e:
+        error_detail = str(e)
         if isinstance(e, HTTPException):
             raise e
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        completion_time = datetime.utcnow()
+        execution_started_at = None
+        execution_completed_at = None
+        result_file_name = None
+        result_file_path = None
+        if isinstance(result, dict):
+            execution_started_at = result.get("execution_started_at")
+            execution_completed_at = result.get("execution_completed_at")
+            result_file_name = result.get("result_file_name")
+            result_file_path = result.get("result_file_path")
+
+        profile_record = {
+            "server_launch_time": SERVER_LAUNCH_TIME,
+            "request_arrival_time": _to_utc_iso(arrival_time),
+            "request_execution_started_at": _to_utc_iso(execution_started_at),
+            "request_completed_at": _to_utc_iso(completion_time),
+            "engine_execution_completed_at": _to_utc_iso(execution_completed_at),
+            "request_metadata": request.metadata,
+            "request_payload": request.dict(),
+            "result_file_name": result_file_name,
+            "result_file_path": result_file_path,
+            "status": "success" if error_detail is None else "error",
+            "error_detail": error_detail,
+        }
+        try:
+            await _log_request_profile(profile_record)
+        except Exception as log_error:
+            logger.warning("Failed to write profiling data: %s", log_error)
 
 
 if __name__ == "__main__":
