@@ -51,10 +51,22 @@ app = FastAPI()
 logger = logging.getLogger(__name__)
 
 SERVER_LAUNCH_TIME = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
-PROFILE_LOG_PATH = Path(
-    os.environ.get("REQUEST_PROFILE_LOG_DIR", os.getcwd())
-) / f"request-exec-info-{SERVER_LAUNCH_TIME}.jsonl"
+_PROFILE_LOG_FILENAME = f"request-exec-info-{SERVER_LAUNCH_TIME}.jsonl"
+_profile_log_dir = Path(os.environ.get("REQUEST_PROFILE_LOG_DIR", os.getcwd()))
+PROFILE_LOG_PATH = _profile_log_dir / _PROFILE_LOG_FILENAME
 _profile_write_lock = threading.Lock()
+
+
+def set_profile_log_dir(base_dir: Optional[str]):
+    """
+    Update the profiling log directory (must be called before requests arrive).
+    """
+    global _profile_log_dir, PROFILE_LOG_PATH
+    if base_dir:
+        _profile_log_dir = Path(base_dir)
+    else:
+        _profile_log_dir = Path(os.environ.get("REQUEST_PROFILE_LOG_DIR", os.getcwd()))
+    PROFILE_LOG_PATH = _profile_log_dir / _PROFILE_LOG_FILENAME
 
 
 def _to_utc_iso(ts: Optional[Union[float, datetime]]) -> Optional[str]:
@@ -212,7 +224,7 @@ class Engine:
 
 @app.post("/generate")
 async def generate_image(request: GenerateRequest):
-    arrival_time = datetime.utcnow()
+    arrival_time = time.time()
     result = None
     error_detail: Optional[str] = None
     try:
@@ -232,7 +244,7 @@ async def generate_image(request: GenerateRequest):
             raise e
         raise HTTPException(status_code=500, detail=str(e))
     finally:
-        completion_time = datetime.utcnow()
+        completion_time = time.time()
         execution_started_at = None
         execution_completed_at = None
         result_file_name = None
@@ -245,10 +257,10 @@ async def generate_image(request: GenerateRequest):
 
         profile_record = {
             "server_launch_time": SERVER_LAUNCH_TIME,
-            "request_arrival_time": _to_utc_iso(arrival_time),
-            "request_execution_started_at": _to_utc_iso(execution_started_at),
-            "request_completed_at": _to_utc_iso(completion_time),
-            "engine_execution_completed_at": _to_utc_iso(execution_completed_at),
+            "arrival_time": arrival_time,
+            "exec_start_time": execution_started_at,
+            "completion_time": completion_time,
+            "engine_exec_end_time": execution_completed_at,
             "request_metadata": request.metadata,
             "request_payload": request.dict(),
             "result_file_name": result_file_name,
@@ -272,6 +284,8 @@ if __name__ == "__main__":
     parser.add_argument('--save_disk_path', type=str, default='output', help='Path to save generated images')
     parser.add_argument('--use_cfg_parallel', action='store_true', help='Whether to use CFG parallel')
     args = parser.parse_args()
+
+    set_profile_log_dir(args.save_disk_path)
 
     xfuser_args = xFuserArgs(
         model=args.model_path,
