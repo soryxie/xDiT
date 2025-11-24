@@ -52,7 +52,17 @@ logger = logging.getLogger(__name__)
 
 SERVER_LAUNCH_TIME = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
 _PROFILE_LOG_FILENAME = f"request-exec-info-{SERVER_LAUNCH_TIME}.jsonl"
-_profile_log_dir = Path(os.environ.get("REQUEST_PROFILE_LOG_DIR", os.getcwd()))
+def _resolve_profile_dir(base_dir: Optional[str]) -> Path:
+    """
+    Normalize the requested directory so it works on both POSIX and Windows.
+    """
+    target = base_dir or os.environ.get("REQUEST_PROFILE_LOG_DIR") or os.getcwd()
+    if os.name != "nt" and "\\" in target:
+        target = target.replace("\\", "/")
+    return Path(target).expanduser()
+
+
+_profile_log_dir = _resolve_profile_dir(None)
 PROFILE_LOG_PATH = _profile_log_dir / _PROFILE_LOG_FILENAME
 _profile_write_lock = threading.Lock()
 
@@ -62,10 +72,7 @@ def set_profile_log_dir(base_dir: Optional[str]):
     Update the profiling log directory (must be called before requests arrive).
     """
     global _profile_log_dir, PROFILE_LOG_PATH
-    if base_dir:
-        _profile_log_dir = Path(base_dir)
-    else:
-        _profile_log_dir = Path(os.environ.get("REQUEST_PROFILE_LOG_DIR", os.getcwd()))
+    _profile_log_dir = _resolve_profile_dir(base_dir)
     PROFILE_LOG_PATH = _profile_log_dir / _PROFILE_LOG_FILENAME
 
 
