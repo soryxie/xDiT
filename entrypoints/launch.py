@@ -187,7 +187,7 @@ if __name__ == "__main__":
     parser.add_argument('--world_size', type=int, default=1, help='Number of parallel workers')
     parser.add_argument('--pipefusion_parallel_degree', type=int, default=1, help='Degree of pipeline fusion parallelism')
     parser.add_argument('--ulysses_parallel_degree', type=int, default=1, help='Degree of Ulysses parallelism')
-    parser.add_argument('--ring_degree', type=int, default=1, help='Degree of ring parallelism')
+    parser.add_argument('--data_parallel_degree', type=int, default=1, help='Degree of data parallel replicas')
     parser.add_argument('--save_disk_path', type=str, default='output', help='Path to save generated images')
     parser.add_argument('--use_cfg_parallel', action='store_true', help='Whether to use CFG parallel')
     args = parser.parse_args()
@@ -200,6 +200,7 @@ if __name__ == "__main__":
         use_torch_compile=False,
         ulysses_degree=args.ulysses_parallel_degree,
         pipefusion_parallel_degree=args.pipefusion_parallel_degree,
+        data_parallel_degree=args.data_parallel_degree,
         use_cfg_parallel=args.use_cfg_parallel,
         dit_parallel_size=0,
     )
