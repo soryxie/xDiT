@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 
 # metadata_path = "./tools/metadata.parquet"
-metadata_path = "./tools/filtered_metadata.parquet" # 500 requests
+metadata_path = "./tools/filtered_2000.parquet" # 500 requests
 _DEFAULT_PLOT_PATH = "./tools/timestamp_distribution.png"
 _DEFAULT_API_URL = os.environ.get("XDIT_SERVER_URL", "http://127.0.0.1:6000/generate")
 _DEFAULT_SAVE_PATH = os.environ.get(
@@ -15,7 +15,7 @@ _DEFAULT_SAVE_PATH = os.environ.get(
 _BASE_PAYLOAD = {
     "prompt": "colored sketch in the style of ck-ccd, young Asian woman in a denim jacket, short ruffled skirt, fishnet tights, black high heel boots, sitting in front of a stone wall covered in anime-themed graffiti, long loose hair, outdoors",
     "num_inference_steps": 50,
-    "cfg": 7.5,
+    "cfg": 7,
     "height": 1024,
     "width": 1024,
     "seed": 42,
@@ -143,24 +143,9 @@ class RequestSimulator:
         payload = dict(_BASE_PAYLOAD)
         if meta.get("prompt") is not None:
             payload["prompt"] = meta["prompt"]
-        if meta.get("step") is not None and pd.notnull(meta["step"]):
-            try:
-                payload["num_inference_steps"] = int(meta["step"])  # step -> num_inference_steps
-            except Exception:
-                pass
         if meta.get("cfg") is not None and pd.notnull(meta["cfg"]):
             try:
                 payload["cfg"] = float(meta["cfg"])
-            except Exception:
-                pass
-        if meta.get("width") is not None and pd.notnull(meta["width"]):
-            try:
-                payload["width"] = int(meta["width"])
-            except Exception:
-                pass
-        if meta.get("height") is not None and pd.notnull(meta["height"]):
-            try:
-                payload["height"] = int(meta["height"])
             except Exception:
                 pass
         if meta.get("seed") is not None and pd.notnull(meta["seed"]):
@@ -170,7 +155,18 @@ class RequestSimulator:
                 pass
         return payload
 
-    def simulate(self, num_requests=10):
+    def simulate(self, num_requests=10, time_scale=1.0):
+        """
+        Simulate sending requests based on trace timestamps.
+
+        Args:
+            num_requests: Number of requests to send (None for all)
+            time_scale: Time scaling factor for request intervals
+                - 1.0 = original speed (use actual trace intervals)
+                - 0.5 = 2x faster (halve the intervals)
+                - 0.1 = 10x faster
+                - 0.0 = send all requests immediately (no delay)
+        """
         import time
         import requests
 
@@ -184,11 +180,13 @@ class RequestSimulator:
         if num_requests is not None and num_requests > 0:
             entries = entries[: num_requests]
 
+        print(f"Simulating {len(entries)} requests with time_scale={time_scale}")
+
         prev_ts = None
         for idx, meta in enumerate(entries):
             ts = meta["timestamp"]
-            if prev_ts is not None:
-                delta = (ts - prev_ts).total_seconds()
+            if prev_ts is not None and time_scale > 0:
+                delta = (ts - prev_ts).total_seconds() * time_scale
                 if delta > 0:
                     time.sleep(delta)
             prev_ts = ts
@@ -196,7 +194,7 @@ class RequestSimulator:
             payload = self._build_payload(meta)
 
             try:
-                resp = requests.post(_DEFAULT_API_URL, json=payload, timeout=30)
+                resp = requests.post(_DEFAULT_API_URL, json=payload, timeout=30000)  # 5 minutes
                 try:
                     content = resp.json()
                 except Exception:
@@ -229,7 +227,7 @@ class RequestSimulator:
             payload = self._build_payload(meta)
 
             try:
-                resp = requests.post(_DEFAULT_API_URL, json=payload, timeout=30)
+                resp = requests.post(_DEFAULT_API_URL, json=payload, timeout=30000)  # 5 minutes
                 try:
                     content = resp.json()
                 except Exception:
@@ -302,3 +300,9 @@ class RequestSimulator:
 
 if __name__ == "__main__":
     simulator = RequestSimulator()
+    # time_scale 控制请求密度:
+    #   1.0 = 原始速度（按trace间隔发送）
+    #   0.5 = 2倍速（间隔减半）
+    #   0.1 = 10倍速（间隔缩短为1/10）
+    #   0.0 = 立即发送所有请求（无延迟）
+    simulator.simulate(num_requests=2000, time_scale=1)
