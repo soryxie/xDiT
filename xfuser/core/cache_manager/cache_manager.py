@@ -124,6 +124,13 @@ class CacheManager:
                 get_runtime_state().pipeline_patch_idx + 1
             ]
             kv_cache = self.cache[layer_type, layer].tensors[0]
+            if kv_cache is None:
+                total_tokens = get_runtime_state().pp_patches_token_start_idx_local[-1]
+                kv_cache = self._allocate_kv_cache(
+                    new_kv=new_kv,
+                    slice_dim=slice_dim,
+                    total_tokens=total_tokens,
+                )
             kv_cache = self._update_kv_in_dim(
                 kv_cache=kv_cache,
                 new_kv=new_kv,
@@ -183,6 +190,15 @@ class CacheManager:
             # start_token_idx = ulysses_world_size * sum(pp_patches_token_num[:get_runtime_state().pipeline_patch_idx])
             # end_token_idx = ulysses_world_size * sum(pp_patches_token_num[:get_runtime_state().pipeline_patch_idx + 1])
             kv_cache = self.cache[layer_type, layer].tensors[0]
+            if kv_cache is None:
+                total_tokens = (
+                    ulysses_world_size * pp_patches_token_start_idx_local[-1]
+                )
+                kv_cache = self._allocate_kv_cache(
+                    new_kv=new_kv,
+                    slice_dim=slice_dim,
+                    total_tokens=total_tokens,
+                )
             kv_cache = self._update_kv_in_dim(
                 kv_cache=kv_cache,
                 new_kv=new_kv,
@@ -217,6 +233,18 @@ class CacheManager:
         elif dim == 3:
             kv_cache[:, :, :, start_idx:end_idx, ...] = new_kv
         return kv_cache
+
+    def _allocate_kv_cache(
+        self,
+        new_kv: torch.Tensor,
+        slice_dim: int,
+        total_tokens: int,
+    ) -> torch.Tensor:
+        if slice_dim < 0:
+            slice_dim += new_kv.dim()
+        cache_shape = list(new_kv.shape)
+        cache_shape[slice_dim] = total_tokens
+        return new_kv.new_zeros(cache_shape)
 
 
 _CACHE_MGR = CacheManager()
