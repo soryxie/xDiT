@@ -105,6 +105,7 @@ class xFuserFluxAttnProcessor(FluxAttnProcessor):
         attention_mask: Optional[torch.Tensor] = None,
         image_rotary_emb: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
+        runtime_state = get_runtime_state()
         query, key, value, encoder_query, encoder_key, encoder_value = _get_qkv_projections(
             attn, hidden_states, encoder_hidden_states
         )
@@ -133,7 +134,7 @@ class xFuserFluxAttnProcessor(FluxAttnProcessor):
 
         else:
             num_encoder_hidden_states_tokens = (
-                get_runtime_state().max_condition_sequence_length
+                runtime_state.max_condition_sequence_length
             )
             num_query_tokens = query.shape[1] - num_encoder_hidden_states_tokens
 
@@ -142,7 +143,8 @@ class xFuserFluxAttnProcessor(FluxAttnProcessor):
             key = apply_rotary_emb(key, image_rotary_emb, sequence_dim=1)
 
         if (
-            get_runtime_state().num_pipeline_patch > 1
+            runtime_state.patch_mode
+            and runtime_state.num_pipeline_patch > 1
             and not self.use_long_ctx_attn_kvcache
         ):
             encoder_hidden_states_key_proj, key = key.split(
@@ -164,12 +166,15 @@ class xFuserFluxAttnProcessor(FluxAttnProcessor):
         key = key.transpose(1, 2)
         value = value.transpose(1, 2)
 
-        uses_pipeline_parallelism = get_runtime_state().num_pipeline_patch > 1
+        # Pipeline sharding logic is only valid once we are in patch mode.
+        uses_pipeline_parallelism = (
+            runtime_state.patch_mode and runtime_state.num_pipeline_patch > 1
+        )
         if not uses_pipeline_parallelism:
             hidden_states = USP(query, key, value)
             hidden_states = hidden_states.transpose(1, 2)
         else:
-            if get_runtime_state().split_text_embed_in_sp:
+            if runtime_state.split_text_embed_in_sp:
                 encoder_hidden_states_query_proj = None
                 encoder_hidden_states_key_proj = None
                 encoder_hidden_states_value_proj = None
